@@ -50,6 +50,7 @@ static void msg_log(const char* s) {
 static int g_trace = 0;
 static int g_fontdiag = 0;
 static int g_storefix = 1; /* keep engine-side copies of the line in Japanese */
+static int g_keepzh = 1;   /* leave the live display buffer in Chinese (backlog reads it) */
 static char g_fontface[64] = {0}; /* when set, rewrite CreateFont*A face name */
 static char g_fontfile[MAX_PATH] = {0}; /* when set, redirect font-file opens to this file */
 static HANDLE g_flog = INVALID_HANDLE_VALUE;
@@ -160,6 +161,7 @@ static void load_config(void) {
         else if (!_stricmp(k, "fontface")) lstrcpynA(g_fontface, v, sizeof(g_fontface));
         else if (!_stricmp(k, "fontfile")) lstrcpynA(g_fontfile, v, sizeof(g_fontfile));
         else if (!_stricmp(k, "storefix")) g_storefix = atoi(v) ? 1 : 0;
+        else if (!_stricmp(k, "keepzh")) g_keepzh = atoi(v) ? 1 : 0;
     }
     fclose(f);
 }
@@ -902,6 +904,15 @@ static DWORD sjis_fit(DWORD n) {
 }
 static void patch_copy_hit(unsigned char* p) {
     if (!g_patlen) return;
+    /* keepzh: the live display buffer must stay Chinese so the backlog and every
+     * other reader of that buffer show the translation; only the engine's own
+     * copies (the ones a save comment is built from) are reverted to Japanese. */
+    if (g_keepzh && p == (unsigned char*)g_origptr) return;
+    /* The engine keeps a per-line display node: the node stores a pointer to its
+     * own text at node_text-0x10 (== node_text+0x18).  Those nodes are what the
+     * backlog renders, so they must keep the Chinese text as well.  A save
+     * comment is built from a counted string ([u16 len][text]) instead. */
+    if (g_keepzh && *(unsigned int*)(p - 0x10) == (unsigned int)(ULONG_PTR)(p + 0x18)) return;
     DWORD* len32 = (DWORD*)(p - 8);
     DWORD cap = *(DWORD*)(p - 4);
     unsigned short len16 = *(unsigned short*)(p - 2);
@@ -993,7 +1004,7 @@ void capture_text(char** ptext) {
 }
 
 void restore_text2(void) {
-    if (g_restore_active && g_origptr) memcpy(g_origptr, g_orig, g_origlen + 1);
+    if (g_restore_active && g_origptr && !g_keepzh) memcpy(g_origptr, g_orig, g_origlen + 1);
     if (g_patlen) { fix_stored_copy(); g_patlen = 0; g_zhlen = 0; }
     g_origptr = NULL; g_restore_active = 0;
 }

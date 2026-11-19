@@ -25,26 +25,79 @@ for f in sorted(glob.glob(os.path.join(P4, "out", "*.jsonl"))):
             trans[o["id"]] = o["zh"]
 print("translations:", len(trans))
 
-used = set()
+used = set()      # SJIS codes the original Japanese text actually contains
+used_chars = set()  # characters the original text actually draws
 for r in corpus:
     b = bytes.fromhex(r["key"]); i = 0
+    try:
+        used_chars.update(b.decode("cp932", "replace"))
+    except Exception:
+        pass
     while i < len(b):
         c = b[i]
         if (0x81 <= c <= 0x9F or 0xE0 <= c <= 0xEA) and i + 1 < len(b):
             used.add((c << 8) | b[i + 1]); i += 2
         else:
             used.add(c); i += 1
-# Valid SJIS double-byte leads are 0x81-0x9F and 0xE0-0xFC; level-2 text codes live in
-# 0x989F-0x9FFC and 0xE040-0xEAA4.  The 0xA000-0xDFFF gap is single-byte halfwidth kana,
-# so codes there are NOT valid double-byte characters (v2 bug: text rendered as kana).
-_FREE_RANGES = [(0x989F, 0x9FFD), (0xE040, 0xEAA5)]
+# Speaker names live in the palette/UI layer, never inside a corpus line.
+used_chars.update("正樹やよいみちるまりかあきら啓介睦月ミツコ美優大須賀ヘルムート三島工藤大西坂上富田慎二高田"
+                  "小野椎名優莉美沙風間宗像夕呼まりも祷子")
+
 def _valid_sjis(code):
     lead = code >> 8; trail = code & 0xFF
     if not (0x81 <= lead <= 0x9F or 0xE0 <= lead <= 0xFC):
         return False
     return 0x40 <= trail <= 0x7E or 0x80 <= trail <= 0xFC
-used.add(0x8140)  # native full-width space must never become a tunnel code
-FREE = [c for lo, hi in _FREE_RANGES for c in range(lo, hi) if _valid_sjis(c) and c not in used]
+
+def _cp932_of(code):
+    try:
+        s = bytes([code >> 8, code & 0xFF]).decode("cp932")
+        return s if len(s) == 1 else None
+    except Exception:
+        return None
+
+def _safe_code(code):
+    """A tunnel code must be invisible to the engine's *native* text path.
+
+    cnpatch.dll keeps two maps:
+      * find_uni()  : tunnel code -> the Chinese character to draw (forward).
+      * build_rmap(): cp932(tunnel code) -> Chinese character (reverse).  The engine
+        sometimes converts SJIS to Unicode before asking for a glyph, so the reverse
+        map recovers the tunnel character from its Unicode form.
+
+    The reverse map is keyed by the *Unicode* value of cp932(code), but
+    GetGlyphOutlineA receives the raw two-byte SJIS code as an integer.  If
+    cp932(code) happens to be U+82DC (苜), the reverse-map key is 0x82DC - exactly
+    the SJIS code of 'ま'.  Every native 'ま' in the game is then drawn with the
+    tunnel character's glyph (v1.18 bug: 【まりか】 rendered as 【６りか】).
+
+    A code is therefore safe only when none of its three identities collide with
+    text the engine draws natively:
+      1. the code itself is unused by the original Japanese text;
+      2. cp932(code) is a character the game never draws;
+      3. if cp932(code) is a valid SJIS lead/trail pair, the character that pair
+         encodes must also be one the game never draws.
+    """
+    if not _valid_sjis(code) or code == 0x8140:   # 0x8140 = native full-width space
+        return False
+    if code in used:                              # (1) shadows a native code
+        return False
+    s = _cp932_of(code)
+    if s is None or s in used_chars:              # (2) its own glyph is drawn natively
+        return False
+    u = ord(s)
+    if _valid_sjis(u):                            # (3) reverse-map key is a native code
+        s2 = _cp932_of(u)
+        if s2 is not None and s2 in used_chars:
+            return False
+    return True
+
+_PREFERRED = [(0x989F, 0x9FFD), (0xE040, 0xEAA5)]
+FREE = [c for lo, hi in _PREFERRED for c in range(lo, hi) if _safe_code(c)]
+if len(FREE) < 3500:
+    FREE += [c for c in range(0x8200, 0x9800) if _safe_code(c)]
+if len(FREE) < 3500:
+    FREE += [c for c in range(0xEAA5, 0xEFFD) if _safe_code(c)]
 ci = [0]
 tmap = {}
 def encode(z):
