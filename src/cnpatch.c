@@ -1105,9 +1105,36 @@ static void install_gdi_export_hook(void) {
 /* ---- diagnostic: inline hook UnivUI!CS5RFont::GetCachedFont ---- */
 extern void font_entry(void);
 extern void* font_tramp;
+/* v1.21-diag: 记录最近 8 个字形码；当序列命中【まりか】这类特征时，抓一次调用栈。
+ * 目的：回答「回味到底是实时排版还是预渲染」——栈里第 2~4 帧就是调用方
+ * （UnivUI 的 GetCachedFont 只有一个直接调用点，RVA 0x307FB，见 docs/）。 */
+static unsigned short g_seq[8];
+static int g_seq_n = 0;
+static int g_stack_dumped = 0;
+static void maybe_dump_stack(void) {
+    static const unsigned short pat_a[] = {0x8179,0x82DC,0x82E8,0x82A9}; /* 【まりか */
+    static const unsigned short pat_b[] = {0x8179,0x969C,0x97A2,0x89D4}; /* 【万里花 */
+    if (g_stack_dumped >= 40) return;
+    if (g_seq_n < 8) return;
+    int hitA = 1, hitB = 1;
+    for (int i = 0; i < 4; i++) {
+        if (g_seq[i] != pat_a[i]) hitA = 0;
+        if (g_seq[i] != pat_b[i]) hitB = 0;
+    }
+    if (!hitA && !hitB) return;
+    g_stack_dumped++;
+    void* frames[10]; USHORT nf = CaptureStackBackTrace(1, 10, frames, NULL);
+    char line[320]; int k = 0;
+    k += wsprintfA(line + k, "STACK %s n=%u", hitA ? "marika" : "michiru", (unsigned)nf);
+    for (int i = 0; i < nf && k < 260; i++) k += wsprintfA(line + k, " %08X", (unsigned)(ULONG_PTR)frames[i]);
+    k += wsprintfA(line + k, "\r\n");
+    DWORD w; WriteFile(g_flog, line, k, &w, NULL);
+}
 void font_probe2(unsigned ch, void* self) {
     if (g_fl_n >= 40000) return;
     g_last_ch = (unsigned short)ch;
+    for (int i = 0; i < 7; i++) g_seq[i] = g_seq[i + 1];
+    g_seq[7] = (unsigned short)ch; if (g_seq_n < 8) g_seq_n++;
     if (g_flog == INVALID_HANDLE_VALUE) {
         char p[MAX_PATH]; join_path(p, "fontlog.txt");
         g_flog = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1115,6 +1142,7 @@ void font_probe2(unsigned ch, void* self) {
     if (g_flog == INVALID_HANDLE_VALUE) return;
     unsigned int uni = 0;
     int tun = (g_enabled && g_ntmap) ? find_uni((unsigned short)ch, &uni) : 0;
+    maybe_dump_stack();
     char buf[96];
     int n = wsprintfA(buf, "%04X %08X %s\r\n", ch & 0xFFFF, self, tun ? "TUNNEL" : "");
     DWORD w; WriteFile(g_flog, buf, n, &w, NULL);
