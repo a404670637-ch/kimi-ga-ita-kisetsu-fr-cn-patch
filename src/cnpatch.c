@@ -353,8 +353,14 @@ static DWORD WINAPI my_GetGlyphOutlineA(HDC hdc, UINT ch, UINT fmt, LPGLYPHMETRI
     unsigned int uni;
     int hit = 0;
     if (g_enabled && g_ntmap) {
+        /* The A entry point is handed raw SJIS codes.  g_rmap is keyed by the Unicode
+         * value of cp932(tunnel_code), so using it here is a type confusion: any native
+         * character whose SJIS code happens to equal such a Unicode value was drawn as
+         * the tunnel's Chinese glyph (that was the 【６りか】/ま→６ bug, and 159 such
+         * pairings still exist for text outside the translated corpus).  Only the
+         * forward map is meaningful for raw codes; the Unicode-keyed map stays for the
+         * W entry point below.  (v1.20-dev, needs live A/B verification.) */
         if (find_uni((unsigned short)ch, &uni)) { hit = 1; gly_log("A", (unsigned short)ch, __builtin_return_address(0)); }
-        else if (g_nrmap && find_rev(ch, &uni)) { hit = 2; gly_log("RA", (unsigned short)ch, __builtin_return_address(0)); }
     }
     if (hit) {
         g_tunnel++;
