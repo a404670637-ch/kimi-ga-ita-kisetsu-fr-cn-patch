@@ -354,3 +354,22 @@ choice.c 增强：同一文本池一次出现 >=2 条未知文本时，除写 CH
   cnpatch.dll            eafcadd8da31ab676c927919cb58225ef705216d42d62083382f16ebd14bda27
   cnpatch_txt.bin        b10e6f47d2fe4a0121dd01236fd4cd71099bf0efea0c3f5c38fefc95a359957b
   cnpatch_uni.bin        af7eb7e36351f7ff64d5d39846a850096238579db81f5cb97709943a820e85d9
+
+二十四、v1.19.1（2026-11-20）路线选项表隧道码失配修复
+现象/根因：v1.19 用 build_patch.py 重建了正文的隧道码编号（cnpatch_uni.bin 由 19,988 B
+改为 18,554 B / 3,091 条），但选项表 cnpatch_choice.bin 仍是 11-01 用旧编号生成的，
+两者共用的隧道编号已经对不上 → 48 条选项全部会显示成别的字。
+实测（work/p5/t_audit_choice.py，用当前 uni 表回译选项 bin）：
+  旧 bin 第 1 条解码为「蛙咱碳髓鵐拷拷看熄」，应为「那我就稍微读读看吧」；
+  **48/48 条全部不匹配，另有 3 个码在新 uni 表里根本不存在**。
+修复：新增 work/p5/t_fix_choice.py —— 复用 build_patch.py 的 _safe_code 判定
+（不在日文语料 used 码集合、cp932 字符不在语料/名牌字集、反向键不撞原生码），
+从 choice/choice.jsonl 重新编码 48 条，并把只在选项里用到的新字追加进 uni 表。
+结果：48 条全部重新编码并通过「编码→回译」校验（48/48 一致、缺失码 0）；
+     uni 表无需新增条目（仍是 3,091 条，sha256 不变）。
+产物 SHA-256：
+  cnpatch_choice.bin  a86b2835469fb91a8895fa8d9a59f0b402217b8e5c938eaa5246a9408a9e8a7a（1,872 B）
+  cnpatch_uni.bin     af7eb7e36351f7ff64d5d39846a850096238579db81f5cb97709943a820e85d9（18,554 B，未变）
+部署：已写入游戏目录（选项表在启动时读取，故下次启动生效；当前进程内的内存副本仍是旧的）。
+教训：正文表与选项表共用同一张隧道表，**必须同一批重建**；以后重建正文表后要立刻重跑选项表，
+并做一次回译校验再发布。
