@@ -36,3 +36,25 @@
    a) 用 `GetCachedFont`（UnivUI 序数 472）钩子 + 栈回溯，先定位「整行渲染」函数（一次性投入，之后所有 UI 文字都能拦）；
    b) 或在对话框模板路径上做实验（需先确认哪个界面真的走 MFC 对话框）；
    c) 暂不改动已发布的 v1.19。
+
+## 六、残留风险量化（2026-11-20 复核，重要）
+
+`cnpatch.c` 的 `my_GetGlyphOutlineA`（IAT 钩子版）逻辑是：
+```c
+if (find_uni((unsigned short)ch, &uni)) { hit = 1; }        /* ch = 原始 SJIS 码，正确 */
+else if (g_nrmap && find_rev(ch, &uni)) { hit = 2; }        /* ch = 原始 SJIS 码，但 g_rmap 用 Unicode 作键 → 语义错配 */
+```
+`build_rmap()` 的键是 `MultiByteToWideChar(932, 隧道码)` 得到的 Unicode，所以只要某个“原生字符”的
+SJIS 码在数值上等于某个隧道码的 cp932 Unicode，就会被误画。
+
+新表（`cnpatch_uni.bin`，3,091 条）静态复核结果：**仍有 384 条这样的配对**，例如
+`tunnel E3FC -> 拽` 会吃掉 `゜(0x814B)`，`tunnel E446 -> 熊` 会吃掉 `〈(0x8171)`，
+`tunnel E449 -> 砂` 会吃掉 `’(0x8166)`，`tunnel E44B -> “` 会吃掉 `＜(0x8183)`，
+`tunnel E443 -> 疚` 会吃掉 `ヾ(0x8153)`。
+
+- **为什么现在没出问题**：构建期 `_safe_code()` 已经保证「语料 + 名牌里出现过的字符」不会成为受害者，
+  所以正文/名牌（玩家看到的 99% 文本）不会错；剩下的 384 个受害者只会出现在**非语料文本**（引擎 UI、菜单、DLC HUD）。
+- **正确修法（建议 v1.20 做）**：A 路径不该用 Unicode 键，二选一：
+  a) `build_rmap()` 改成以「原始两字节码」为键（同一套表同时服务 A 路径），W 路径另建 Unicode 键表；
+  b) 或删掉 A 路径的 `find_rev` 回退（前提是确认没有「先转 Unicode 再调 A 版」的调用方，需 A/B 实测）。
+  两者都需要重启游戏实测，故今晚未改动已发布的 v1.19。
