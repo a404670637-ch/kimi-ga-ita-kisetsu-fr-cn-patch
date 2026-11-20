@@ -102,6 +102,7 @@ keepzh=1       ; v1.19：显示缓冲保留中文，让回味显示中文（保�
 | --- | --- |
 | `bilingual/bilingual.tsv` | 正文 44,138 条，两列 `jp<TAB>zh` |
 | `bilingual/choice.tsv` | 路线选项 48 条，同样两列 |
+
 > 正文对照表约 8 MB（GitHub 网页预览会截断），建议 **下载后本地检索**：
 > 点开后用右上角 Download，或直接取 `raw.githubusercontent.com` 的 raw 地址，再用编辑器或 `grep` 查询。
 
