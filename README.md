@@ -94,6 +94,30 @@ keepzh=1       ; v1.19：显示缓冲保留中文，让回味显示中文（保�
 | `cnpatch\cnpatch_choice.bin` | 路线选项表（48 条） |
 | `cnpatch\config.ini` | 配置 |
 
+### 中日对照数据（不需要游戏本体）
+
+仓库里直接提供了导出好的对照表，方便第三方在不安装游戏的情况下校对译文：
+
+| 文件 | 内容 |
+| --- | --- |
+| `bilingual/bilingual.tsv` | 正文 44,138 条，两列 `jp<TAB>zh` |
+| `bilingual/choice.tsv` | 路线选项 48 条，同样两列 |
+
+约定：
+
+- 原句里的 `0x03`（引擎的停顿分隔符）显示为空格，末尾的 `0x01` 结束符已去掉；
+- 台词原文可能跨行，已统一转成字面量 `\n`，保证一条记录占一行；
+- 中文里的生僻字通过隧道码表还原成正常 Unicode 字符，可直接阅读与检索。
+
+如需自行重新生成（例如改过译表之后）：
+
+```bash
+python tools/dump_bilingual.py --dir cnpatch -o bilingual/bilingual.tsv           # 正文
+python tools/dump_bilingual.py --dir cnpatch --choice-only -o bilingual/choice.tsv  # 选项
+```
+
+> 原文与译文版权归 age 及相关权利人所有，此处仅用于学习交流与译文校对，请勿用于商业用途。
+
 ### 校验值（SHA-256，v1.19.2）
 
 ```
