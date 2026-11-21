@@ -128,7 +128,7 @@ v1.6 已把名牌括号改为 【】 并在引擎的名字比较函数上加了�
 SHA-256：
   SHFolder.dll             d7822087276c6cd25195eb10b2ef9181182be97d6cf43ca36d70c4a2bd6ae964
   cnpatch/cnpatch.dll      e9f6cece18eb58307967104aa750b99786b31e1572751dc26eae2f8e2c7891cd
-  cnpatch/cnpatch_txt.bin  ca5416cc9d01bebe0169bd39f3f67a8228b2f6df5f44eaeac1a335f8fe7be619
+  cnpatch/cnpatch_txt.bin  03bea265f5075396a8e6aa56e100bd53c3fa80393334e552f16c9e3ddc315d5b
   cnpatch/cnpatch_uni.bin  35e9c1bd00d3c417e5b98c43f94c58378be9108b7efca5fcb15a757116daa1d7
   cnpatch/cnpatch_choice.bin b77f28362c93dfffdd7249c24fbebf12f2ecad41b22df88b6987018f03c8f4b4
 
@@ -178,6 +178,8 @@ v1.21 修正（2026-11-21）：语气与引号收尾。
 （3）静态校验：44,138 条记录、0 溢出、0 丢名牌；全部以 0x01 结尾；引号不平衡仅剩 3 条，
     均与日文原文一致（原文本身就缺引号）。
 
+v1.21c 修正（2026-11-21）：人称数量。L16589 美津子看四姐妹合照处，正树「她就是那两位的女儿」
+    应为「她们就是那两位的女儿」（原文「その人たちの娘」指这几位姐妹，是复数）。
 v1.21b 修正（2026-11-21）：悬空的「最」。
 （1）L11767 美津子「この中でｍｉｓａちゃんが一番…そういったキミの判断は間違ってない」旧译「这些人里misa最…」，
     把「一番」当成「最＋被省略的形容词」，实际「一番」本身是谓语＝「最出色/最好」。已改「misa最出色」。
