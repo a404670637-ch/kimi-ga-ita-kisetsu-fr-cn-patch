@@ -470,10 +470,16 @@ choice.c 增强：同一文本池一次出现 >=2 条未知文本时，除写 CH
 · 名牌字色表 namemap.h 也依赖隧道码：旧表 175 组里有 119 组的 zh 字节已失效（英文名/单片假名名不受影响，
   中文名如【万里花】【晶】会失去字色）。已重新生成，175/175 与新表一致。
 
+（6）实机反馈修正（2 条）：
+    · L31831 富田「所以，我溜进泳池冲了个澡」→「我们溜进泳池冲了个澡」——
+      原文主语省略，但上下文是富田一伙人一起溜进去的（后文「お・ま・え・ら〜〜」「おまえらずるいぞ」也印证是群体）。
+    · L27656 大西·坂上·工藤「イエスッ！」原译「遵命！」→「没错！」——
+      这里是附和上一句「準備は万端だ！　なっ！？」（准备万全！对吧！？），不是听命行事。
+
 【E. 产物】
-  cnpatch/cnpatch.dll        b33b31ce767160d1c6aaeea5937d542573b40ec8870957489cc4b40e72f602a0（112,689 B）
-  cnpatch/cnpatch_txt.bin    ea0b9af7d99ebdb4a3231bf870574b28003b5155d9540bc2f4e1a52b3a41139f（5,878,604 B）
-  cnpatch/cnpatch_uni.bin    372e78f532dafc65184f0ee86d9a8152201d1cb203eecc65d76cd83f0f3ab0c6（18,500 B）
-  cnpatch/cnpatch_choice.bin F2=f2e5c7e8deb87b352b6a61f0d90d60aa82e39762264340577888e02345fed487（1,872 B）
+  cnpatch/cnpatch.dll        e9f6cece18eb58307967104aa750b99786b31e1572751dc26eae2f8e2c7891cd（112,689 B）
+  cnpatch/cnpatch_txt.bin    3f3b1fd78ed4a5e884505787e527a4454580d66add36a1c75434b6c3cc4ff8c0（5,878,606 B）
+  cnpatch/cnpatch_uni.bin    35e9c1bd00d3c417e5b98c43f94c58378be9108b7efca5fcb15a757116daa1d7（18,500 B）
+  cnpatch/cnpatch_choice.bin F2=b77f28362c93dfffdd7249c24fbebf12f2ecad41b22df88b6987018f03c8f4b4（1,872 B）
 校验：44,138 条记录、key 有序、overflow 0 / np_dropped 0；新旧二进制逐条对比 0 丢行、0 丢名牌。
 旧版备份：cnpatch*.bak_v1192（游戏目录与 dist 内保留）。

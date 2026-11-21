@@ -131,10 +131,10 @@ python tools/dump_bilingual.py --dir cnpatch --choice-only -o bilingual/choice.t
 
 ```
 SHFolder.dll              d7822087276c6cd25195eb10b2ef9181182be97d6cf43ca36d70c4a2bd6ae964
-cnpatch\cnpatch.dll       b33b31ce767160d1c6aaeea5937d542573b40ec8870957489cc4b40e72f602a0
-cnpatch\cnpatch_txt.bin   ea0b9af7d99ebdb4a3231bf870574b28003b5155d9540bc2f4e1a52b3a41139f
-cnpatch\cnpatch_uni.bin   372e78f532dafc65184f0ee86d9a8152201d1cb203eecc65d76cd83f0f3ab0c6
-cnpatch\cnpatch_choice.bin f2e5c7e8deb87b352b6a61f0d90d60aa82e39762264340577888e02345fed487
+cnpatch\cnpatch.dll       e9f6cece18eb58307967104aa750b99786b31e1572751dc26eae2f8e2c7891cd
+cnpatch\cnpatch_txt.bin   3f3b1fd78ed4a5e884505787e527a4454580d66add36a1c75434b6c3cc4ff8c0
+cnpatch\cnpatch_uni.bin   35e9c1bd00d3c417e5b98c43f94c58378be9108b7efca5fcb15a757116daa1d7
+cnpatch\cnpatch_choice.bin b77f28362c93dfffdd7249c24fbebf12f2ecad41b22df88b6987018f03c8f4b4
 ```
 
 ## 版本履历（摘要）

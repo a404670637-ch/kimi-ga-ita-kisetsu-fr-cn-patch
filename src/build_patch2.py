@@ -109,6 +109,17 @@ if len(FREE) < 3500:
     FREE += [c for c in range(0xEAA5, 0xEFFD) if _safe_code(c)]
 ci = [0]
 tmap = {}
+# Stable tunnel codes: reuse the previously deployed code table so that a text edit
+# never renumbers the whole table (which would silently break cnpatch_choice.bin and
+# the compiled-in namemap.h).  Only genuinely new characters get new codes.
+_base = os.path.join(BASE, "p5", "tmap_base.json")
+if os.path.exists(_base):
+    _bm = json.load(open(_base, encoding="utf-8"))
+    for _ch, _code in _bm.items():
+        tmap[_ch] = int(_code)
+    _used = set(tmap.values())
+    FREE = [c for c in FREE if c not in _used]
+    print("tmap base:", len(tmap), "free left:", len(FREE))
 def encode(z):
     """Tunnel-encode every non-ASCII char.
 
