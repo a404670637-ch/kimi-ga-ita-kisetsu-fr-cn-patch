@@ -583,3 +583,18 @@ patch_copy_hit 的分支2 改由 config.ini 的 storefix2 控制，默认 0（�
   cnpatch/cnpatch_txt.bin 5,878,688 字节 SHA-256 03bea265f5075396a8e6aa56e100bd53c3fa80393334e552f16c9e3ddc315d5b（未变）
   cnpatch_uni.bin / cnpatch_choice.bin 未变。
   config.ini 新增 storefix2=0。
+
+三十二、v1.22b（2026-11-21）天气台词时制修正（L9623 / id 589）
+【A. 现象】
+实机回味里弥生说：「嗯，听说从凌晨起就一直下得很大。真可惜呢……。好啦，饭马上就好了，去洗手吧」——
+「从凌晨起就一直下得很大」读起来像是已经在下（过去/现在时）。
+【B. 语境】
+上一句正树问「……？　话说回来，明天果然会下大雨吗？」（明日はやっぱり大雨かなあ？），
+弥生答「ええ、明け方からずっと大降りですって。残念ねえ……。」——这是**明天**的天气预报（ですって＝听说）。
+【C. 修正】
+L9623（id 589）「嗯，听说从凌晨起就一直下得很大。」→「嗯，听说明天从凌晨起就会一直下得很大。」
+其余部分（真可惜呢……。／好啦，饭马上就好了，去洗手吧）不变。
+【D. 产物】
+  cnpatch/cnpatch_txt.bin 5,878,694 字节 SHA-256 5eabce8a5e9fb7d56b1aacc352b44854639e6d99054ff3a999a2222d02b53b84
+  cnpatch/cnpatch.dll 未变（d4b66f14…）；cnpatch_uni.bin / cnpatch_choice.bin 未变。
+  静态校验：44,138 条、overflow 0、missing 1（纯控制符行）、np_dropped 0。
