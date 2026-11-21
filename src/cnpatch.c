@@ -52,6 +52,9 @@ static int g_fontdiag = 0;
 static int g_storefix = 1; /* keep engine-side copies of the line in Japanese */
 static int g_keepzh = 1;   /* leave the live display buffer in Chinese (backlog reads it) */
 static int g_matchdiag = 0; /* log every lookup decision (lookup.log) */
+static int g_prefixfix = 1; /* recover flashback copies that storefix truncated to the Chinese length */
+static int g_storefix2 = 0; /* restore [u16 len][text] counted strings too (0: keep them Chinese) */
+static int g_prefix_hits = 0;
 static HANDLE g_mlog = INVALID_HANDLE_VALUE;
 static char g_fontface[64] = {0}; /* when set, rewrite CreateFont*A face name */
 static char g_fontfile[MAX_PATH] = {0}; /* when set, redirect font-file opens to this file */
@@ -163,8 +166,10 @@ static void load_config(void) {
         else if (!_stricmp(k, "fontface")) lstrcpynA(g_fontface, v, sizeof(g_fontface));
         else if (!_stricmp(k, "fontfile")) lstrcpynA(g_fontfile, v, sizeof(g_fontfile));
         else if (!_stricmp(k, "storefix")) g_storefix = atoi(v) ? 1 : 0;
+        else if (!_stricmp(k, "storefix2")) g_storefix2 = atoi(v) ? 1 : 0;
         else if (!_stricmp(k, "keepzh")) g_keepzh = atoi(v) ? 1 : 0;
         else if (!_stricmp(k, "matchdiag")) g_matchdiag = atoi(v) ? 1 : 0;
+        else if (!_stricmp(k, "prefixfix")) g_prefixfix = atoi(v) ? 1 : 0;
     }
     fclose(f);
 }
@@ -235,6 +240,79 @@ static const BYTE* find_rec(const char* s) {
         if (cmp < 0) hi = mid - 1; else lo = mid + 1;
     }
     mdiag(s, 0, -1, 0);
+    return NULL;
+}
+
+/* ---- prefix recovery -----------------------------------------------------
+ * storefix can only write the Japanese original back into a [u16 len][text]
+ * counted string up to the stored length, so such a copy ends up as a
+ * truncated Japanese prefix followed by space padding and the trailing 0x01.
+ * When the engine later displays that copy (flashback / quoted lines) it no
+ * longer matches a table key and the line shows Japanese.  The counted
+ * string's length field still holds the Chinese length, so putting the
+ * Chinese value back is a byte-for-byte fit.
+ */
+static int cmp_key_pre(const BYTE* key, unsigned klen, const char* pre, unsigned m) {
+    unsigned n = klen < m ? klen : m;
+    for (unsigned i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)pre[i];
+        if (c != key[i]) return (key[i] < c) ? -1 : 1;
+    }
+    return (klen < m) ? -1 : 0;
+}
+
+static const BYTE* prefix_lookup(const char* pre, unsigned m, unsigned want_vlen) {
+    if (!g_nrec || m < 10 || m > 4000) return NULL;
+    int lo = 0, hi = (int)g_nrec - 1, first = -1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        const BYTE* rec = g_base + g_idx[mid];
+        unsigned klen = *(unsigned short*)rec;
+        if (cmp_key_pre(rec + 2, klen, pre, m) < 0) lo = mid + 1;
+        else { first = mid; hi = mid - 1; }
+    }
+    if (first < 0) return NULL;
+    const BYTE* found = NULL;
+    for (int i = first; i < (int)g_nrec; i++) {
+        const BYTE* rec = g_base + g_idx[i];
+        unsigned klen = *(unsigned short*)rec;
+        if (cmp_key_pre(rec + 2, klen, pre, m) != 0) break;
+        if (klen <= m) continue;
+        unsigned vlen = *(unsigned short*)(rec + 2 + klen);
+        if (vlen != want_vlen) continue;
+        if (found) return NULL;   /* ambiguous: leave it alone */
+        found = rec;
+    }
+    return found;
+}
+
+/* drop the space padding storefix leaves after the truncated Japanese prefix */
+static unsigned truncated_len(const char* s, unsigned limit) {
+    unsigned m = limit;
+    while (m > 0 && (unsigned char)s[m - 1] == ' ') m--;
+    for (unsigned i = m; i < limit; i++)
+        if ((unsigned char)s[i] != ' ') return 0;
+    return m;
+}
+
+static const BYTE* find_rec_truncated(const char* s, unsigned* mout, unsigned* vleno, int* variant) {
+    if (!g_nrec || !s) return NULL;
+    /* A: the [u16 len][text] counted string itself (its length field holds the Chinese length) */
+    if ((ULONG_PTR)s > 0x10010) {
+        unsigned len16 = *(unsigned short*)(s - 2);
+        if (len16 >= 11 && len16 <= 4000 && (unsigned char)s[len16 - 1] == 0x01) {
+            unsigned m = truncated_len(s, len16 - 1);
+            const BYTE* r = m ? prefix_lookup(s, m, len16) : NULL;
+            if (r) { *mout = m; *vleno = len16; *variant = 1; return r; }
+        }
+    }
+    /* B: a NUL-terminated copy of that string (still carries the trailing 0x01) */
+    DWORD L = (DWORD)lstrlenA(s);
+    if (L >= 11 && L <= 4000 && (unsigned char)s[L - 1] == 0x01) {
+        unsigned m = truncated_len(s, L - 1);
+        const BYTE* r = m ? prefix_lookup(s, m, L) : NULL;
+        if (r) { *mout = m; *vleno = L; *variant = 2; return r; }
+    }
     return NULL;
 }
 
@@ -948,18 +1026,23 @@ static void patch_copy_hit(unsigned char* p) {
     DWORD* len32 = (DWORD*)(p - 8);
     DWORD cap = *(DWORD*)(p - 4);
     unsigned short len16 = *(unsigned short*)(p - 2);
+    int branch = 0;
     if (*len32 == g_zhlen && cap >= g_origlen + 1 && cap < 0x100000) {
         memcpy(p, g_orig, g_origlen);
         p[g_origlen] = 0;
         *len32 = g_origlen;
-        g_sfix_count++;
-    } else if (len16 == g_zhlen) {
+        g_sfix_count++; branch = 1;
+    } else if (g_storefix2 && len16 == g_zhlen) {
         DWORD n = g_patlen;
         if (g_origlen < n) n = g_origlen;
         n = sjis_fit(n);
         memcpy(p, g_orig, n);
         for (DWORD i = n; i < g_patlen; i++) p[i] = ' ';
-        g_sfix_count++;
+        g_sfix_count++; branch = 2;
+    }
+    if (g_log_enabled) {
+        static int nlog = 0;
+        if (nlog < 2000) { nlog++; logmsg("COPY p=%08lX len16=%u branch=%d", (unsigned long)(ULONG_PTR)p, (unsigned)len16, branch); }
     }
 }
 static void fix_stored_copy(void) {
@@ -1089,7 +1172,20 @@ void capture_text(char** ptext) {
     if (g_matchdiag && g_hits <= 400) logmsg("hitlen %d replaced %d: %s", (int)lstrlenA(s), replaced, s);
     /* palette is left untouched; the compare hook resolves Chinese names */
     if (!replaced) {
-        if (g_restore_active == 0 && !IsBadStringPtrA(s, 65536)) {
+        if (g_prefixfix && g_enabled && g_nrec) {
+            unsigned pm = 0, pv = 0; int variant = 0;
+            const BYTE* prec = find_rec_truncated(s, &pm, &pv, &variant);
+            if (prec) {
+                /* storefix left a truncated Japanese copy here: put the Chinese back */
+                unsigned klen = *(unsigned short*)prec;
+                const BYTE* key = prec + 2;
+                memcpy(s, key + klen + 2, pv);
+                g_prefix_hits++; replaced = 1;
+                if (g_log_enabled && g_prefix_hits < 60)
+                    logmsg("prefixfix #%d var=%d m=%u vlen=%u", g_prefix_hits, variant, pm, pv);
+            }
+        }
+        if (!replaced && g_restore_active == 0 && !IsBadStringPtrA(s, 65536)) {
             DWORD ol = (DWORD)lstrlenA(s);
             if (ol < sizeof(g_orig) - 1) { memcpy(g_orig, s, ol + 1); g_origlen = ol; g_origptr = s; g_restore_active = 1; }
         }
