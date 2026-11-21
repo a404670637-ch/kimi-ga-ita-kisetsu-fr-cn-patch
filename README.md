@@ -1,7 +1,7 @@
 # 《君がいた季節 FR》简体中文补丁（rUGP 5.95）
 
 > 2011 重制版《君がいた季節 -FR-》的运行时文本汉化补丁。**不修改游戏任何原始文件**，全程运行时替换。
-> 当前版本：**v1.21**（2026-11-21）· 正文 44,138 条 · 名牌 · 48 条路线选项 · F8 中/日切换
+> 当前版本：**v1.21**（2026-11-21，含 1.21b 悬空「最」修正）· 正文 44,138 条 · 名牌 · 48 条路线选项 · F8 中/日切换
 
 ---
 
@@ -136,7 +136,7 @@ python tools/dump_bilingual.py --dir cnpatch --choice-only -o bilingual/choice.t
 ```
 SHFolder.dll              d7822087276c6cd25195eb10b2ef9181182be97d6cf43ca36d70c4a2bd6ae964
 cnpatch\cnpatch.dll       e9f6cece18eb58307967104aa750b99786b31e1572751dc26eae2f8e2c7891cd
-cnpatch\cnpatch_txt.bin   0f7bf4c0349478662f70b26b9284e3bf74b8a9eabd6aece134c914e9d826b8a0
+cnpatch\cnpatch_txt.bin   ca5416cc9d01bebe0169bd39f3f67a8228b2f6df5f44eaeac1a335f8fe7be619
 cnpatch\cnpatch_uni.bin   35e9c1bd00d3c417e5b98c43f94c58378be9108b7efca5fcb15a757116daa1d7
 cnpatch\cnpatch_choice.bin b77f28362c93dfffdd7249c24fbebf12f2ecad41b22df88b6987018f03c8f4b4
 ```
