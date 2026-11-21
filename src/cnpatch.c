@@ -51,6 +51,8 @@ static int g_trace = 0;
 static int g_fontdiag = 0;
 static int g_storefix = 1; /* keep engine-side copies of the line in Japanese */
 static int g_keepzh = 1;   /* leave the live display buffer in Chinese (backlog reads it) */
+static int g_matchdiag = 0; /* log every lookup decision (lookup.log) */
+static HANDLE g_mlog = INVALID_HANDLE_VALUE;
 static char g_fontface[64] = {0}; /* when set, rewrite CreateFont*A face name */
 static char g_fontfile[MAX_PATH] = {0}; /* when set, redirect font-file opens to this file */
 static HANDLE g_flog = INVALID_HANDLE_VALUE;
@@ -162,6 +164,7 @@ static void load_config(void) {
         else if (!_stricmp(k, "fontfile")) lstrcpynA(g_fontfile, v, sizeof(g_fontfile));
         else if (!_stricmp(k, "storefix")) g_storefix = atoi(v) ? 1 : 0;
         else if (!_stricmp(k, "keepzh")) g_keepzh = atoi(v) ? 1 : 0;
+        else if (!_stricmp(k, "matchdiag")) g_matchdiag = atoi(v) ? 1 : 0;
     }
     fclose(f);
 }
@@ -191,6 +194,28 @@ static int load_txt(void) {
     return 1;
 }
 
+/* matchdiag: record which line could not be matched, with its exact bytes. */
+static void mdiag(const char* s, unsigned klen, int idx, int ok) {
+    if (!g_matchdiag || g_mlog == INVALID_HANDLE_VALUE) return;
+    static int n = 0;
+    if (n > 4000) return;
+    n++;
+    DWORD len = (DWORD)lstrlenA(s);
+    if (len > 900) return;
+    char head[128];
+    int h = wsprintfA(head, "M %d ok=%d idx=%d klen=%u len=%lu hex=", n, ok, idx, klen, (unsigned long)len);
+    DWORD w;
+    WriteFile(g_mlog, head, h, &w, NULL);
+    for (DWORD i = 0; i < len && i < 900; i++) {
+        char b2[3]; b2[0] = "0123456789abcdef"[(unsigned char)s[i] >> 4];
+        b2[1] = "0123456789abcdef"[(unsigned char)s[i] & 15]; b2[2] = 0;
+        WriteFile(g_mlog, b2, 2, &w, NULL);
+    }
+    WriteFile(g_mlog, "~~", 2, &w, NULL);
+    WriteFile(g_mlog, s, len, &w, NULL);
+    WriteFile(g_mlog, "\r\n", 2, &w, NULL);
+}
+
 static const BYTE* find_rec(const char* s) {
     if (!g_nrec) return NULL;
     int lo = 0, hi = (int)g_nrec - 1;
@@ -206,9 +231,10 @@ static const BYTE* find_rec(const char* s) {
             if (c != key[i]) { cmp = (c < key[i]) ? -1 : 1; break; }
         }
         if (cmp == 0 && s[klen] != 0) cmp = 1;
-        if (cmp == 0) return rec;
+        if (cmp == 0) { mdiag(s, klen, (int)mid, 1); return rec; }
         if (cmp < 0) hi = mid - 1; else lo = mid + 1;
     }
+    mdiag(s, 0, -1, 0);
     return NULL;
 }
 
@@ -353,8 +379,14 @@ static DWORD WINAPI my_GetGlyphOutlineA(HDC hdc, UINT ch, UINT fmt, LPGLYPHMETRI
     unsigned int uni;
     int hit = 0;
     if (g_enabled && g_ntmap) {
+        /* The A entry point is handed raw SJIS codes.  g_rmap is keyed by the Unicode
+         * value of cp932(tunnel_code), so using it here is a type confusion: any native
+         * character whose SJIS code happens to equal such a Unicode value was drawn as
+         * the tunnel's Chinese glyph (that was the 【６りか】/ま→６ bug, and 159 such
+         * pairings still exist for text outside the translated corpus).  Only the
+         * forward map is meaningful for raw codes; the Unicode-keyed map stays for the
+         * W entry point below.  (v1.20-dev, needs live A/B verification.) */
         if (find_uni((unsigned short)ch, &uni)) { hit = 1; gly_log("A", (unsigned short)ch, __builtin_return_address(0)); }
-        else if (g_nrmap && find_rev(ch, &uni)) { hit = 2; gly_log("RA", (unsigned short)ch, __builtin_return_address(0)); }
     }
     if (hit) {
         g_tunnel++;
@@ -932,6 +964,11 @@ static void patch_copy_hit(unsigned char* p) {
 }
 static void fix_stored_copy(void) {
     if (!g_storefix || !g_patlen || g_patlen > 4000) return;
+    /* Short lines: the engine deep-copies them into the display node (SBO) instead of
+     * sharing a heap buffer.  Reverting those copies puts Japanese back into the node
+     * the backlog/first frame renders from, so the line shows Japanese again.
+     * Keep them Chinese; the save comment of a short line is rare and cosmetic. */
+    if (g_origlen <= 32) return;
     DWORD t0 = GetTickCount();
     unsigned char first = (unsigned char)g_pat[0];
     MEMORY_BASIC_INFORMATION mbi;
@@ -959,6 +996,60 @@ static void fix_stored_copy(void) {
         logmsg("storefix: %d copies in %lu ms", hits, (unsigned long)(GetTickCount() - t0));
 }
 
+/* ---- short-line post-fix ------------------------------------------------
+ * For very short lines the engine deep-copies the text into its display node
+ * *before* our replacement is visible, so the node keeps Japanese and the
+ * backlog/first frame render Japanese.  Right after the original SetText call
+ * we look for any remaining Japanese copy of this short line and rewrite it to
+ * Chinese in place.  Long lines do not need this (their node points at the
+ * buffer we already rewrote).
+ */
+static int g_pfix_count = 0;
+static unsigned char g_orig2[64], g_pat2[64];
+static DWORD g_origlen2 = 0, g_patlen2 = 0;
+__attribute__((used)) void post_text_fix(void) {
+    if (!g_enabled || !g_keepzh) return;
+    if (!g_patlen2 || !g_origlen2) return;
+    if (g_patlen2 > 32 || g_origlen2 > 32) return;    /* short lines only */
+    if (g_patlen2 > g_origlen2) return;
+    if (!g_orig2[0]) return;
+    unsigned char first = (unsigned char)g_orig2[0];
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char* addr = (unsigned char*)0x10000;
+    int hits = 0;
+    while (addr < (unsigned char*)0x7FFF0000) {
+        if (!VirtualQuery(addr, &mbi, sizeof(mbi))) break;
+        SIZE_T sz = mbi.RegionSize;
+        if (!sz) break;
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
+            (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_EXECUTE_READWRITE) &&
+            sz <= 16u * 1024 * 1024) {
+            unsigned char* p = (unsigned char*)mbi.BaseAddress;
+            unsigned char* end = p + sz;
+            while (p + g_origlen2 <= end) {
+                unsigned char* q = (unsigned char*)memchr(p, first, (size_t)(end - p - g_origlen2 + 1));
+                if (!q) break;
+                if (q >= (unsigned char*)0x10010 && q != (unsigned char*)g_origptr &&
+                    !memcmp(q, g_orig2, g_origlen2)) {
+                    unsigned char* tail = q + g_origlen2;
+                    if (*tail == 0x01 || *tail == 0) {
+                        memcpy(q, g_pat2, g_patlen2);
+                        unsigned char fill = (*tail == 0x01) ? 0x01 : 0x00;
+                        for (DWORD i = g_patlen2; i < g_origlen2; i++) q[i] = fill;
+                        hits++;
+                        if (hits >= 32) break;
+                    }
+                }
+                p = q + 1;
+            }
+        }
+        addr = (unsigned char*)mbi.BaseAddress + sz;
+    }
+    if (g_log_enabled && g_pfix_count < 20) {
+        g_pfix_count++;
+        logmsg("postfix: %d copies of len %d orig %d", hits, (int)g_patlen2, (int)g_origlen2);
+    }
+}
 void capture_text(char** ptext) {
     colour_restore_now();
     if (!ptext) return;
@@ -985,11 +1076,17 @@ void capture_text(char** ptext) {
                 if (vlen && val[vlen - 1] == 0x01) g_patlen = vlen - 1;
                 if (g_patlen > sizeof(g_pat)) g_patlen = sizeof(g_pat);
                 memcpy(g_pat, val, g_patlen);
+                /* remember a private copy for post_text_fix (restore_text2 clears g_pat) */
+                if (g_origlen <= 32 && g_patlen <= 32) {
+                    memcpy(g_orig2, g_orig, g_origlen); g_origlen2 = g_origlen;
+                    memcpy(g_pat2, g_pat, g_patlen); g_patlen2 = g_patlen;
+                } else { g_origlen2 = 0; g_patlen2 = 0; }
                 replaced = 1; g_replaced++;
             }
         }
     }
     if ((g_hits & 255) == 0) logmsg("stats: hits=%d replaced=%d tunnel=%d enabled=%d", g_hits, g_replaced, g_tunnel, g_enabled);
+    if (g_matchdiag && g_hits <= 400) logmsg("hitlen %d replaced %d: %s", (int)lstrlenA(s), replaced, s);
     /* palette is left untouched; the compare hook resolves Chinese names */
     if (!replaced) {
         if (g_restore_active == 0 && !IsBadStringPtrA(s, 65536)) {
@@ -1099,9 +1196,36 @@ static void install_gdi_export_hook(void) {
 /* ---- diagnostic: inline hook UnivUI!CS5RFont::GetCachedFont ---- */
 extern void font_entry(void);
 extern void* font_tramp;
+/* v1.21-diag: 记录最近 8 个字形码；当序列命中【まりか】这类特征时，抓一次调用栈。
+ * 目的：回答「回味到底是实时排版还是预渲染」——栈里第 2~4 帧就是调用方
+ * （UnivUI 的 GetCachedFont 只有一个直接调用点，RVA 0x307FB，见 docs/）。 */
+static unsigned short g_seq[8];
+static int g_seq_n = 0;
+static int g_stack_dumped = 0;
+static void maybe_dump_stack(void) {
+    static const unsigned short pat_a[] = {0x8179,0x82DC,0x82E8,0x82A9}; /* 【まりか */
+    static const unsigned short pat_b[] = {0x8179,0x969C,0x97A2,0x89D4}; /* 【万里花 */
+    if (g_stack_dumped >= 40) return;
+    if (g_seq_n < 8) return;
+    int hitA = 1, hitB = 1;
+    for (int i = 0; i < 4; i++) {
+        if (g_seq[i] != pat_a[i]) hitA = 0;
+        if (g_seq[i] != pat_b[i]) hitB = 0;
+    }
+    if (!hitA && !hitB) return;
+    g_stack_dumped++;
+    void* frames[10]; USHORT nf = CaptureStackBackTrace(1, 10, frames, NULL);
+    char line[320]; int k = 0;
+    k += wsprintfA(line + k, "STACK %s n=%u", hitA ? "marika" : "michiru", (unsigned)nf);
+    for (int i = 0; i < nf && k < 260; i++) k += wsprintfA(line + k, " %08X", (unsigned)(ULONG_PTR)frames[i]);
+    k += wsprintfA(line + k, "\r\n");
+    DWORD w; WriteFile(g_flog, line, k, &w, NULL);
+}
 void font_probe2(unsigned ch, void* self) {
     if (g_fl_n >= 40000) return;
     g_last_ch = (unsigned short)ch;
+    for (int i = 0; i < 7; i++) g_seq[i] = g_seq[i + 1];
+    g_seq[7] = (unsigned short)ch; if (g_seq_n < 8) g_seq_n++;
     if (g_flog == INVALID_HANDLE_VALUE) {
         char p[MAX_PATH]; join_path(p, "fontlog.txt");
         g_flog = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1109,6 +1233,7 @@ void font_probe2(unsigned ch, void* self) {
     if (g_flog == INVALID_HANDLE_VALUE) return;
     unsigned int uni = 0;
     int tun = (g_enabled && g_ntmap) ? find_uni((unsigned short)ch, &uni) : 0;
+    maybe_dump_stack();
     char buf[96];
     int n = wsprintfA(buf, "%04X %08X %s\r\n", ch & 0xFFFF, self, tun ? "TUNNEL" : "");
     DWORD w; WriteFile(g_flog, buf, n, &w, NULL);
@@ -1495,6 +1620,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             char p[MAX_PATH]; join_path(p, "msglog.bin");
             g_msg = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
             logmsg("msglog: %s", p);
+        }
+        if (g_matchdiag) {
+            char lp[MAX_PATH]; join_path(lp, "lookup.log");
+            g_mlog = CreateFileA(lp, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            logmsg("matchdiag: %s", lp);
         }
         if (g_fetch_log) install_fetch_hook();
         if (g_dump_miss) {
