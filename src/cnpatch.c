@@ -9,6 +9,19 @@
 #include <stdlib.h>
 
 static void join_path(char* out, const char* name);
+static void diag_record_write(unsigned char* p, DWORD origlen, DWORD zhlen, DWORD cap);
+static void diag_record_text(const char* s, DWORD origlen, DWORD zhlen, int repl);
+static int g_cdiag = 0;
+static volatile LONG g_veh_busy = 0;
+static HANDLE g_cdiag_avf = INVALID_HANDLE_VALUE;
+static DWORD g_cdiag_avn = 0;
+static DWORD g_cdiag_t0 = 0;
+typedef struct { DWORD p, origlen, zhlen, cap, tick; } diag_wrec;
+static diag_wrec g_cwr[256];
+static int g_cwr_n = 0, g_cwr_pos = 0;
+typedef struct { DWORD s, origlen, zhlen, repl, tick; } diag_trec;
+static diag_trec g_ctr[128];
+static int g_ctr_n = 0, g_ctr_pos = 0;
 static void colour_hint(const char* s);
 static void colour_restore_now(void);
 
@@ -170,6 +183,7 @@ static void load_config(void) {
         else if (!_stricmp(k, "keepzh")) g_keepzh = atoi(v) ? 1 : 0;
         else if (!_stricmp(k, "matchdiag")) g_matchdiag = atoi(v) ? 1 : 0;
         else if (!_stricmp(k, "prefixfix")) g_prefixfix = atoi(v) ? 1 : 0;
+        else if (!_stricmp(k, "diag")) g_cdiag = atoi(v) ? 1 : 0;
     }
     fclose(f);
 }
@@ -1027,7 +1041,8 @@ static void patch_copy_hit(unsigned char* p) {
     DWORD cap = *(DWORD*)(p - 4);
     unsigned short len16 = *(unsigned short*)(p - 2);
     int branch = 0;
-    if (*len32 == g_zhlen && cap >= g_origlen + 1 && cap < 0x100000) {
+    if ((*len32 == g_zhlen || *len32 == g_origlen) && cap >= g_origlen + 1 && cap < 0x100000) {
+        diag_record_write(p, g_origlen, g_zhlen, cap);
         memcpy(p, g_orig, g_origlen);
         p[g_origlen] = 0;
         *len32 = g_origlen;
@@ -1140,6 +1155,7 @@ void capture_text(char** ptext) {
     if (!s) return;
     g_hits++;
     msg_log(s);
+    if (g_cdiag) diag_record_text(s, (DWORD)lstrlenA(s), 0, 0);
     if (g_sd_on) script_dump(s);
     if (g_log_enabled && g_hits < 400) logmsg("hit %d: %s", g_hits, s);
     int replaced = 0;
@@ -1153,7 +1169,26 @@ void capture_text(char** ptext) {
             DWORD ol = (DWORD)lstrlenA(s);
             if (vlen <= ol && ol < sizeof(g_orig) - 1) {
                 memcpy(g_orig, s, ol + 1); g_origlen = ol; g_origptr = s; g_restore_active = 1;
-                memcpy(s, val, vlen); s[vlen] = 0;
+                /* Keep the original byte length.  The engine's compact node walk
+                 * (Vm60+0x30080, size fn Vm60+0x79340) computes the stride as
+                 * 0x14 + align4(strlen(text)); shortening the string in place
+                 * makes the walk under-step and drift into the next node, which
+                 * is the "several loads then crash" bug.  Pad the unused tail
+                 * with 0x01 (the script text terminator) so strlen is unchanged. */
+                {
+                    DWORD body = vlen;
+                    if (body && (unsigned char)val[body - 1] == 0x01) body--;
+                    if (body > ol) body = ol;
+                    memcpy(s, val, body);
+                    if (ol > body) {
+                        for (DWORD i = body; i + 1 < ol; i++) s[i] = 0x01;
+                        s[ol - 1] = 0x01;
+                        s[ol] = 0;
+                    } else {
+                        s[vlen] = 0;
+                    }
+                }
+                if (g_cdiag) diag_record_text(s, ol, vlen, 1);
                 g_zhlen = vlen;
                 g_patlen = vlen;
                 if (vlen && val[vlen - 1] == 0x01) g_patlen = vlen - 1;
@@ -1200,6 +1235,136 @@ void restore_text2(void) {
     if (g_restore_active && g_origptr && !g_keepzh) memcpy(g_origptr, g_orig, g_origlen + 1);
     if (g_patlen) { fix_stored_copy(); g_patlen = 0; g_zhlen = 0; }
     g_origptr = NULL; g_restore_active = 0;
+}
+
+
+/* ---------------- crash diagnostics (config diag=1) ----------------
+ * Records recent storefix writes and the last SetText buffers, and a VEH that
+ * logs the first-chance AV context plus a hexdump around esi.  The compact
+ * node walk in Vm60+0x30080 crashed with esi pointing into text, so the dump
+ * around esi is what decides between "stride drift" and "overwritten vtable".
+ */
+
+static void diag_log(const char* s, int n) {
+    if (g_cdiag_avf == INVALID_HANDLE_VALUE) return;
+    DWORD w; WriteFile(g_cdiag_avf, s, (DWORD)n, &w, NULL);
+}
+static void diag_record_write(unsigned char* p, DWORD origlen, DWORD zhlen, DWORD cap) {
+    if (!g_cdiag) return;
+    diag_wrec* r = &g_cwr[g_cwr_pos];
+    r->p = (DWORD)(ULONG_PTR)p; r->origlen = origlen; r->zhlen = zhlen; r->cap = cap;
+    r->tick = GetTickCount() - g_cdiag_t0;
+    g_cwr_pos = (g_cwr_pos + 1) & 255; if (g_cwr_n < 256) g_cwr_n++;
+}
+static void diag_record_text(const char* s, DWORD origlen, DWORD zhlen, int repl) {
+    if (!g_cdiag) return;
+    diag_trec* r = &g_ctr[g_ctr_pos];
+    r->s = (DWORD)(ULONG_PTR)s; r->origlen = origlen; r->zhlen = zhlen; r->repl = (DWORD)repl;
+    r->tick = GetTickCount() - g_cdiag_t0;
+    g_ctr_pos = (g_ctr_pos + 1) & 127; if (g_ctr_n < 128) g_ctr_n++;
+}
+static int diag_hex(char* out, int cap, const unsigned char* p, DWORD n) {
+    static const char* hx = "0123456789ABCDEF";
+    int o = 0;
+    for (DWORD i = 0; i < n && o + 4 < cap; i++) {
+        out[o++] = hx[p[i] >> 4];
+        out[o++] = hx[p[i] & 15];
+        out[o++] = ' ';
+    }
+    if (o < cap) out[o] = 0;
+    return o;
+}
+static int diag_fmt(char* b, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = diag_fmt(b, fmt, ap);
+    va_end(ap);
+    return n;
+}
+static LONG CALLBACK diag_veh(EXCEPTION_POINTERS* ep) {
+    if (!g_cdiag || g_cdiag_avf == INVALID_HANDLE_VALUE) return EXCEPTION_CONTINUE_SEARCH;
+    if (g_cdiag_avn >= 127) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&g_veh_busy, 1)) return EXCEPTION_CONTINUE_SEARCH;
+    g_cdiag_avn++;
+    CONTEXT* c = ep->ContextRecord;
+    char b[1400];
+    int o = diag_fmt(b,
+        "EX#%lu tid=%lu code=%08lX addr=%08lX info=%08lX/%08lX eip=%08lX esi=%08lX edx=%08lX ebx=%08lX ecx=%08lX edi=%08lX ebp=%08lX esp=%08lX\r\n",
+        (unsigned long)g_cdiag_avn, (unsigned long)GetCurrentThreadId(),
+        (unsigned long)ep->ExceptionRecord->ExceptionCode,
+        (unsigned long)(ULONG_PTR)ep->ExceptionRecord->ExceptionAddress,
+        (unsigned long)ep->ExceptionRecord->ExceptionInformation[0],
+        (unsigned long)ep->ExceptionRecord->ExceptionInformation[1],
+        (unsigned long)c->Eip, (unsigned long)c->Esi, (unsigned long)c->Edx,
+        (unsigned long)c->Ebx, (unsigned long)c->Ecx, (unsigned long)c->Edi,
+        (unsigned long)c->Ebp, (unsigned long)c->Esp);
+    diag_log(b, o);
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char* esi = (unsigned char*)(ULONG_PTR)c->Esi;
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && VirtualQuery(esi, &mbi, sizeof(mbi))) {
+        unsigned char* base = (unsigned char*)mbi.BaseAddress;
+        unsigned char* rend = base + mbi.RegionSize;
+        o = diag_fmt(b, "  esi region base=%08lX size=%08lX state=%08lX type=%08lX prot=%08lX\r\n",
+            (unsigned long)(ULONG_PTR)base, (unsigned long)mbi.RegionSize,
+            (unsigned long)mbi.State, (unsigned long)mbi.Type, (unsigned long)mbi.Protect);
+        diag_log(b, o);
+        if (mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
+            unsigned char* lo = esi - 64;
+            unsigned char* hi = esi + 64;
+            if (lo < base) lo = base;
+            if (hi > rend) hi = rend;
+            if (hi > lo) {
+                DWORD n = (DWORD)(hi - lo);
+                if (n > 200) n = 200;
+                o = diag_fmt(b, "  around esi lo=%08lX n=%lu:", (unsigned long)(ULONG_PTR)lo, (unsigned long)n);
+                o += diag_hex(b + o, (int)sizeof(b) - o - 4, lo, n);
+                b[o++] = '\r'; b[o++] = '\n';
+                diag_log(b, o);
+            }
+        } else {
+            diag_log("  esi not readable\r\n", 21);
+        }
+    }
+    for (int i = 0; i < g_cwr_n && i < 16; i++) {
+        int k = (g_cwr_pos - 1 - i + 256) & 255;
+        o = diag_fmt(b, "  wr[%d] p=%08lX orig=%lu zh=%lu cap=%08lX t=%lu\r\n", i,
+            (unsigned long)g_cwr[k].p, (unsigned long)g_cwr[k].origlen,
+            (unsigned long)g_cwr[k].zhlen, (unsigned long)g_cwr[k].cap,
+            (unsigned long)g_cwr[k].tick);
+        diag_log(b, o);
+    }
+    for (int i = 0; i < g_ctr_n && i < 16; i++) {
+        int k = (g_ctr_pos - 1 - i + 128) & 127;
+        o = diag_fmt(b, "  tx[%d] s=%08lX orig=%lu zh=%lu repl=%lu t=%lu\r\n", i,
+            (unsigned long)g_ctr[k].s, (unsigned long)g_ctr[k].origlen,
+            (unsigned long)g_ctr[k].zhlen, (unsigned long)g_ctr[k].repl,
+            (unsigned long)g_ctr[k].tick);
+        diag_log(b, o);
+    }
+    diag_log("----\r\n", 6);
+    InterlockedExchange(&g_veh_busy, 0);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static LONG WINAPI diag_uef(EXCEPTION_POINTERS* ep) {
+    if (!g_cdiag || g_cdiag_avf == INVALID_HANDLE_VALUE) return EXCEPTION_EXECUTE_HANDLER;
+    char b[256];
+    int o = diag_fmt(b, "UEF code=%08lX addr=%08lX tid=%lu\r\n",
+        (unsigned long)ep->ExceptionRecord->ExceptionCode,
+        (unsigned long)(ULONG_PTR)ep->ExceptionRecord->ExceptionAddress,
+        (unsigned long)GetCurrentThreadId());
+    diag_log(b, o);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static void diag_init(void) {
+    if (!g_cdiag) return;
+    char p[MAX_PATH]; join_path(p, "avlog.txt");
+    g_cdiag_avf = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    g_cdiag_t0 = GetTickCount();
+    g_cwr_pos = g_cwr_n = g_ctr_pos = g_ctr_n = 0;
+    AddVectoredExceptionHandler(1, diag_veh);
+    SetUnhandledExceptionFilter(diag_uef);
+    logmsg("diag: veh installed, avlog=%s", p);
 }
 
 static void install_text_hook(void) {
@@ -1728,6 +1893,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             g_miss = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         }
         logmsg("cnpatch loaded (enabled=%d hotkey=0x%02X)", g_enabled, g_hotkey);
+        diag_init();
         CreateThread(NULL, 0, hotkey_thread, NULL, 0, NULL);
         HMODULE gf = GetModuleHandleA("gdi32full.dll");
         if (!gf) gf = LoadLibraryA("gdi32full.dll");
