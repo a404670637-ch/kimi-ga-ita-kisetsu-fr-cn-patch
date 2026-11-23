@@ -1181,7 +1181,11 @@ void capture_text(char** ptext) {
                     if (body > ol) body = ol;
                     memcpy(s, val, body);
                     if (ol > body) {
-                        for (DWORD i = body; i + 1 < ol; i++) s[i] = 0x01;
+                        /* pad with the engine's own spacing byte: 0x01 inside the
+                         * text makes the engine treat the line as ended/cleared
+                         * (the whole box goes blank). 0x03 is the pause/space the
+                         * original scripts use, so it renders as blank space. */
+                        for (DWORD i = body; i + 1 < ol; i++) s[i] = 0x03;
                         s[ol - 1] = 0x01;
                         s[ol] = 0;
                     } else {
